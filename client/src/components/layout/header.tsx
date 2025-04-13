@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useAuth } from "@/hooks/use-auth";
+import { useState, useEffect } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useQuery } from "@tanstack/react-query";
 import { Project } from "@/interfaces";
@@ -12,12 +11,48 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+// Custom hook to get user data and handle logout
+function useUserHeader() {
+  const [user, setUser] = useState<any>(null);
+  
+  useEffect(() => {
+    fetch("/api/user", {
+      credentials: "include"
+    })
+    .then(res => res.ok ? res.json() : null)
+    .then(userData => {
+      if (userData) setUser(userData);
+    })
+    .catch(err => {
+      console.error("Error fetching user data:", err);
+    });
+  }, []);
+  
+  const logoutMutation = {
+    mutate: () => {
+      fetch("/api/logout", {
+        method: "POST",
+        credentials: "include"
+      })
+      .then(() => {
+        window.location.href = "/auth";
+      })
+      .catch(err => {
+        console.error("Error logging out:", err);
+      });
+    },
+    isPending: false
+  };
+  
+  return { user, logoutMutation };
+}
+
 type HeaderProps = {
   toggleMobileNav: () => void;
 };
 
 export default function Header({ toggleMobileNav }: HeaderProps) {
-  const { user, logoutMutation } = useAuth();
+  const { user, logoutMutation } = useUserHeader();
   const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
 
   const { data: projects = [] } = useQuery<Project[]>({
