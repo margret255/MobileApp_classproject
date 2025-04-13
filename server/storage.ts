@@ -1,18 +1,16 @@
-import { users, files, fileVersions, comments, activities, projects, projectMembers, 
-  type User, type InsertUser, type File, type InsertFile, 
-  type FileVersion, type InsertFileVersion, type Comment, 
-  type InsertComment, type Activity, type InsertActivity,
-  type Project, type InsertProject, type ProjectMember, type InsertProjectMember } from "@shared/schema";
+import { 
+  users, files, fileVersions, comments, activities, projects, projectMembers,
+  type User, type File, type FileVersion, type Comment, type Activity, type Project, type ProjectMember,
+  type InsertUser, type InsertFile, type InsertFileVersion, type InsertComment, type InsertActivity, type InsertProject, type InsertProjectMember
+} from "@shared/schema";
 import session from "express-session";
-import createMemoryStore from "memorystore";
-import { randomUUID } from "crypto";
+import connectPg from "connect-pg-simple";
+import { db, pool } from "./db";
+import { eq, desc, and, sql } from "drizzle-orm";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 
-const MemoryStore = createMemoryStore(session);
-
-// Modify the interface with any CRUD methods
-// you might need
 export interface IStorage {
   // User operations
   getUser(id: number): Promise<User | undefined>;
@@ -77,383 +75,359 @@ export interface IStorage {
   sessionStore: session.SessionStore;
 }
 
-export class MemStorage implements IStorage {
-  private usersStore: Map<number, User>;
-  private projectsStore: Map<number, Project>;
-  private projectMembersStore: Map<number, ProjectMember>;
-  private filesStore: Map<number, File>;
-  private fileVersionsStore: Map<number, FileVersion>;
-  private commentsStore: Map<number, Comment>;
-  private activitiesStore: Map<number, Activity>;
-  private fileContents: Map<string, Buffer>;
+const PostgresSessionStore = connectPg(session);
+
+export class DatabaseStorage implements IStorage {
   sessionStore: session.SessionStore;
-  
-  private userIdCounter: number;
-  private projectIdCounter: number;
-  private projectMemberIdCounter: number;
-  private fileIdCounter: number;
-  private fileVersionIdCounter: number;
-  private commentIdCounter: number;
-  private activityIdCounter: number;
-  
+
   constructor() {
-    this.usersStore = new Map();
-    this.projectsStore = new Map();
-    this.projectMembersStore = new Map();
-    this.filesStore = new Map();
-    this.fileVersionsStore = new Map();
-    this.commentsStore = new Map();
-    this.activitiesStore = new Map();
-    this.fileContents = new Map();
-    
-    this.userIdCounter = 1;
-    this.projectIdCounter = 1;
-    this.projectMemberIdCounter = 1;
-    this.fileIdCounter = 1;
-    this.fileVersionIdCounter = 1;
-    this.commentIdCounter = 1;
-    this.activityIdCounter = 1;
-    
-    this.sessionStore = new MemoryStore({
-      checkPeriod: 86400000, // 24 hours
-    });
-    
-    // Create a default project
-    this.createProject({
-      name: "Web Development Project",
-      description: "A collaborative project for web development"
+    this.sessionStore = new PostgresSessionStore({ 
+      pool, 
+      createTableIfMissing: true 
     });
   }
-  
+
   // User operations
   async getUser(id: number): Promise<User | undefined> {
-    return this.usersStore.get(id);
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user || undefined;
   }
-  
+
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.usersStore.values()).find(
-      (user) => user.username.toLowerCase() === username.toLowerCase(),
-    );
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    return user || undefined;
   }
-  
+
   async createUser(insertUser: InsertUser): Promise<User> {
-    const id = this.userIdCounter++;
-    // If no username in the email, generate one
-    const email = insertUser.email || `${insertUser.username}@example.com`;
-    const avatarUrl = insertUser.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(insertUser.fullName || insertUser.username)}&background=random`;
-    
-    const user: User = { 
-      ...insertUser, 
-      id,
-      email,
-      avatarUrl,
-      createdAt: new Date().toISOString() 
-    };
-    
-    this.usersStore.set(id, user);
-    
-    // Add user to default project
-    if (this.projectsStore.size > 0) {
-      const projectId = 1; // First project
-      await this.addProjectMember({
-        userId: id,
-        projectId,
-        role: "member",
-        joinedAt: new Date().toISOString()
-      });
-      
-      // Create "join" activity
-      await this.createActivity({
-        type: "join",
-        userId: id,
-        projectId,
-        timestamp: new Date().toISOString()
-      });
-    }
-    
+    const [user] = await db
+      .insert(users)
+      .values(insertUser)
+      .returning();
     return user;
   }
-  
+
   // Project operations
   async getProjects(): Promise<Project[]> {
-    return Array.from(this.projectsStore.values());
+    return await db.select().from(projects);
   }
-  
+
   async getProject(id: number): Promise<Project | undefined> {
-    return this.projectsStore.get(id);
+    const [project] = await db.select().from(projects).where(eq(projects.id, id));
+    return project || undefined;
   }
-  
+
   async createProject(project: InsertProject): Promise<Project> {
-    const id = this.projectIdCounter++;
-    const newProject: Project = {
-      ...project,
-      id,
-      createdAt: new Date().toISOString()
-    };
-    
-    this.projectsStore.set(id, newProject);
+    const [newProject] = await db
+      .insert(projects)
+      .values(project)
+      .returning();
     return newProject;
   }
-  
+
   // Project Members operations
   async getProjectMembers(projectId: number): Promise<(ProjectMember & { user: User })[]> {
-    return Array.from(this.projectMembersStore.values())
-      .filter(member => member.projectId === projectId)
-      .map(member => {
-        const user = this.usersStore.get(member.userId);
-        return {
-          ...member,
-          user: user as User
-        };
-      });
-  }
-  
-  async addProjectMember(projectMember: InsertProjectMember): Promise<ProjectMember> {
-    const id = this.projectMemberIdCounter++;
-    const newMember: ProjectMember = {
-      ...projectMember,
-      id
-    };
+    const members = await db
+      .select()
+      .from(projectMembers)
+      .where(eq(projectMembers.projectId, projectId));
     
-    this.projectMembersStore.set(id, newMember);
+    // Fetch the user data for each member
+    const result = await Promise.all(
+      members.map(async (member) => {
+        const user = await this.getUser(member.userId);
+        return { ...member, user: user! };
+      })
+    );
+    
+    return result;
+  }
+
+  async addProjectMember(projectMember: InsertProjectMember): Promise<ProjectMember> {
+    const [newMember] = await db
+      .insert(projectMembers)
+      .values(projectMember)
+      .returning();
     return newMember;
   }
-  
+
   // File operations
   async getFiles(): Promise<(File & { user: { id: number, name: string, avatarUrl?: string } })[]> {
-    return Array.from(this.filesStore.values()).map(file => {
-      const user = this.usersStore.get(file.userId);
-      return {
-        ...file,
-        user: {
-          id: user?.id || 0,
-          name: user?.fullName || user?.username || "Unknown",
-          avatarUrl: user?.avatarUrl
-        }
-      };
-    });
+    const filesList = await db
+      .select()
+      .from(files)
+      .orderBy(desc(files.createdAt));
+    
+    // Fetch the user data for each file
+    const result = await Promise.all(
+      filesList.map(async (file) => {
+        const user = await this.getUser(file.userId);
+        return { 
+          ...file, 
+          user: {
+            id: user!.id,
+            name: user!.fullName || user!.username,
+            avatarUrl: user!.avatarUrl
+          }
+        };
+      })
+    );
+    
+    return result;
   }
-  
+
   async getRecentFiles(limit: number = 4): Promise<(File & { user: { id: number, name: string, avatarUrl?: string } })[]> {
-    const files = await this.getFiles();
-    // Sort by updatedAt descending
-    return files.sort((a, b) => 
-      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-    ).slice(0, limit);
+    const filesList = await db
+      .select()
+      .from(files)
+      .orderBy(desc(files.createdAt))
+      .limit(limit);
+    
+    // Fetch the user data for each file
+    const result = await Promise.all(
+      filesList.map(async (file) => {
+        const user = await this.getUser(file.userId);
+        return { 
+          ...file, 
+          user: {
+            id: user!.id,
+            name: user!.fullName || user!.username,
+            avatarUrl: user!.avatarUrl
+          }
+        };
+      })
+    );
+    
+    return result;
   }
-  
+
   async getFile(id: number): Promise<(File & { user: { id: number, name: string, avatarUrl?: string } }) | undefined> {
-    const file = this.filesStore.get(id);
+    const [file] = await db
+      .select()
+      .from(files)
+      .where(eq(files.id, id));
+    
     if (!file) return undefined;
     
-    const user = this.usersStore.get(file.userId);
-    return {
-      ...file,
+    const user = await this.getUser(file.userId);
+    
+    return { 
+      ...file, 
       user: {
-        id: user?.id || 0,
-        name: user?.fullName || user?.username || "Unknown",
-        avatarUrl: user?.avatarUrl
+        id: user!.id,
+        name: user!.fullName || user!.username,
+        avatarUrl: user!.avatarUrl
       }
     };
   }
-  
+
   async createFile(fileData: InsertFile & { content: Buffer }): Promise<File> {
-    const id = this.fileIdCounter++;
-    const { content, ...fileInfo } = fileData;
+    // Store the file content in the file system or a separate blob store
+    // For this implementation, we'll just generate a path
+    const fileName = `${Date.now()}-${fileData.name}`;
+    const filePath = `uploads/${fileName}`;
+
+    // Store the file in the filesystem
+    const uploadDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../uploads");
+    await fs.promises.mkdir(uploadDir, { recursive: true });
+    await fs.promises.writeFile(path.join(uploadDir, fileName), fileData.content);
     
-    // Generate a unique file path
-    const fileName = `file_${id}_${Date.now()}_${randomUUID()}`;
-    const filePath = fileName;
+    // Create the file record in the database
+    const [file] = await db
+      .insert(files)
+      .values({
+        ...fileData,
+        path: filePath
+      })
+      .returning();
     
-    // Store the file content
-    this.fileContents.set(filePath, content);
-    
-    const file: File = {
-      ...fileInfo,
-      id,
-      path: filePath,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    
-    this.filesStore.set(id, file);
-    
-    // Create an initial file version
-    await this.createFileVersion({
-      fileId: id,
-      version: 1,
-      path: filePath,
-      size: fileInfo.size,
-      userId: fileInfo.userId,
-      action: "uploaded",
-      createdAt: new Date().toISOString(),
-      content
-    });
-    
-    // Create an activity
+    // Create an activity record
     await this.createActivity({
       type: "upload",
-      userId: fileInfo.userId,
-      fileId: id,
-      projectId: fileInfo.projectId,
-      timestamp: new Date().toISOString()
+      userId: fileData.userId,
+      fileId: file.id,
+      projectId: fileData.projectId
     });
     
     return file;
   }
-  
+
   // File Version operations
   async getFileVersions(fileId: number): Promise<(FileVersion & { user: { id: number, name: string, avatarUrl?: string } })[]> {
-    const versions = Array.from(this.fileVersionsStore.values())
-      .filter(version => version.fileId === fileId)
-      .sort((a, b) => b.version - a.version); // Sort by version descending
+    const versionsList = await db
+      .select()
+      .from(fileVersions)
+      .where(eq(fileVersions.fileId, fileId))
+      .orderBy(desc(fileVersions.version));
     
-    return versions.map(version => {
-      const user = this.usersStore.get(version.userId);
-      return {
-        ...version,
-        user: {
-          id: user?.id || 0,
-          name: user?.fullName || user?.username || "Unknown",
-          avatarUrl: user?.avatarUrl
-        }
-      };
-    });
+    // Fetch the user data for each version
+    const result = await Promise.all(
+      versionsList.map(async (version) => {
+        const user = await this.getUser(version.userId);
+        return { 
+          ...version, 
+          user: {
+            id: user!.id,
+            name: user!.fullName || user!.username,
+            avatarUrl: user!.avatarUrl
+          }
+        };
+      })
+    );
+    
+    return result;
   }
-  
+
   async createFileVersion(fileVersion: InsertFileVersion & { content: Buffer }): Promise<FileVersion> {
-    const id = this.fileVersionIdCounter++;
-    const { content, ...versionInfo } = fileVersion;
+    // Store the file content in the file system or a separate blob store
+    const file = await this.getFile(fileVersion.fileId);
+    const fileName = `${Date.now()}-v${fileVersion.version}-${file!.name}`;
+    const filePath = `uploads/versions/${fileName}`;
+
+    // Store the file in the filesystem
+    const uploadDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../uploads/versions");
+    await fs.promises.mkdir(uploadDir, { recursive: true });
+    await fs.promises.writeFile(path.join(uploadDir, fileName), fileVersion.content);
     
-    // Store file content
-    this.fileContents.set(versionInfo.path, content);
+    // Create the file version record in the database
+    const [version] = await db
+      .insert(fileVersions)
+      .values({
+        ...fileVersion,
+        path: filePath
+      })
+      .returning();
     
-    const version: FileVersion = {
-      ...versionInfo,
-      id
-    };
-    
-    this.fileVersionsStore.set(id, version);
-    
-    // Update the file's updatedAt
-    const file = this.filesStore.get(fileVersion.fileId);
-    if (file) {
-      this.filesStore.set(file.id, {
-        ...file,
-        updatedAt: new Date().toISOString()
-      });
-      
-      // Create an activity if this is not the first version
-      if (fileVersion.version > 1) {
-        await this.createActivity({
-          type: "update",
-          userId: fileVersion.userId,
-          fileId: fileVersion.fileId,
-          projectId: file.projectId,
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
+    // Create an activity record
+    await this.createActivity({
+      type: "update",
+      userId: fileVersion.userId,
+      fileId: fileVersion.fileId,
+      projectId: file!.projectId
+    });
     
     return version;
   }
-  
+
   // Comment operations
   async getComments(): Promise<(Comment & { user: { id: number, name: string, avatarUrl?: string }, fileName: string })[]> {
-    return Array.from(this.commentsStore.values()).map(comment => {
-      const user = this.usersStore.get(comment.userId);
-      const file = this.filesStore.get(comment.fileId);
-      
-      return {
-        ...comment,
-        user: {
-          id: user?.id || 0,
-          name: user?.fullName || user?.username || "Unknown",
-          avatarUrl: user?.avatarUrl
-        },
-        fileName: file?.name || "Unknown File"
-      };
-    });
+    const commentsList = await db
+      .select()
+      .from(comments)
+      .orderBy(desc(comments.createdAt));
+    
+    // Fetch the user data and file name for each comment
+    const result = await Promise.all(
+      commentsList.map(async (comment) => {
+        const user = await this.getUser(comment.userId);
+        const file = await this.getFile(comment.fileId);
+        return { 
+          ...comment, 
+          user: {
+            id: user!.id,
+            name: user!.fullName || user!.username,
+            avatarUrl: user!.avatarUrl
+          },
+          fileName: file!.name
+        };
+      })
+    );
+    
+    return result;
   }
-  
+
   async getFileComments(fileId: number): Promise<(Comment & { user: { id: number, name: string, avatarUrl?: string } })[]> {
-    const comments = Array.from(this.commentsStore.values())
-      .filter(comment => comment.fileId === fileId)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const commentsList = await db
+      .select()
+      .from(comments)
+      .where(eq(comments.fileId, fileId))
+      .orderBy(desc(comments.createdAt));
     
-    return comments.map(comment => {
-      const user = this.usersStore.get(comment.userId);
-      return {
-        ...comment,
-        user: {
-          id: user?.id || 0,
-          name: user?.fullName || user?.username || "Unknown",
-          avatarUrl: user?.avatarUrl
-        }
-      };
-    });
+    // Fetch the user data for each comment
+    const result = await Promise.all(
+      commentsList.map(async (comment) => {
+        const user = await this.getUser(comment.userId);
+        return { 
+          ...comment, 
+          user: {
+            id: user!.id,
+            name: user!.fullName || user!.username,
+            avatarUrl: user!.avatarUrl
+          }
+        };
+      })
+    );
+    
+    return result;
   }
-  
+
   async createComment(comment: InsertComment): Promise<Comment> {
-    const id = this.commentIdCounter++;
-    const newComment: Comment = {
-      ...comment,
-      id,
-      createdAt: new Date().toISOString()
-    };
+    // Create the comment record in the database
+    const [newComment] = await db
+      .insert(comments)
+      .values(comment)
+      .returning();
     
-    this.commentsStore.set(id, newComment);
-    
-    // Create an activity
+    // Get the file to get the project ID
     const file = await this.getFile(comment.fileId);
-    if (file) {
-      await this.createActivity({
-        type: "comment",
-        userId: comment.userId,
-        fileId: comment.fileId,
-        projectId: file.projectId,
-        timestamp: new Date().toISOString()
-      });
-    }
+    
+    // Create an activity record
+    await this.createActivity({
+      type: "comment",
+      userId: comment.userId,
+      fileId: comment.fileId,
+      projectId: file!.projectId
+    });
     
     return newComment;
   }
-  
+
   // Activity operations
   async getActivities(): Promise<(Activity & { 
     user: { id: number, name: string, avatarUrl?: string },
     fileName?: string
   })[]> {
-    const activities = Array.from(this.activitiesStore.values())
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    const activitiesList = await db
+      .select()
+      .from(activities)
+      .orderBy(desc(activities.timestamp))
+      .limit(50);
     
-    return activities.map(activity => {
-      const user = this.usersStore.get(activity.userId);
-      const file = activity.fileId ? this.filesStore.get(activity.fileId) : undefined;
-      
-      return {
-        ...activity,
-        user: {
-          id: user?.id || 0,
-          name: user?.fullName || user?.username || "Unknown",
-          avatarUrl: user?.avatarUrl
-        },
-        fileName: file?.name
-      };
-    });
+    // Fetch the user data and file name for each activity
+    const result = await Promise.all(
+      activitiesList.map(async (activity) => {
+        const user = await this.getUser(activity.userId);
+        
+        let fileName;
+        if (activity.fileId) {
+          const file = await this.getFile(activity.fileId);
+          fileName = file?.name;
+        }
+        
+        return { 
+          ...activity, 
+          user: {
+            id: user!.id,
+            name: user!.fullName || user!.username,
+            avatarUrl: user!.avatarUrl
+          },
+          fileName
+        };
+      })
+    );
+    
+    return result;
   }
-  
+
   async createActivity(activity: InsertActivity): Promise<Activity> {
-    const id = this.activityIdCounter++;
-    const newActivity: Activity = {
-      ...activity,
-      id
-    };
+    // Create the activity record in the database
+    const [newActivity] = await db
+      .insert(activities)
+      .values(activity)
+      .returning();
     
-    this.activitiesStore.set(id, newActivity);
     return newActivity;
   }
-  
+
   // Stats and contribution operations
   async getStats(): Promise<{
     uploads: number;
@@ -463,45 +437,55 @@ export class MemStorage implements IStorage {
     fileTypes: { name: string; value: number }[];
     activityByCategory: { name: string; value: number }[];
   }> {
-    const uploads = this.filesStore.size;
-    const comments = this.commentsStore.size;
-    const members = this.usersStore.size;
+    // Count uploads (files)
+    const [filesResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(files);
+    const uploads = filesResult.count;
     
-    // Calculate days active
-    const activityDates = new Set<string>();
-    Array.from(this.activitiesStore.values()).forEach(activity => {
-      const date = new Date(activity.timestamp).toISOString().split('T')[0];
-      activityDates.add(date);
-    });
-    const daysActive = activityDates.size;
+    // Count comments
+    const [commentsResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(comments);
+    const comments = commentsResult.count;
     
-    // Calculate file types
-    const fileTypeCounts: Record<string, number> = {};
-    Array.from(this.filesStore.values()).forEach(file => {
-      const fileType = file.type;
-      fileTypeCounts[fileType] = (fileTypeCounts[fileType] || 0) + 1;
-    });
+    // Count members (project members)
+    const [membersResult] = await db
+      .select({ count: sql<number>`count(distinct ${projectMembers.userId})` })
+      .from(projectMembers);
+    const members = membersResult.count;
     
-    const fileTypes = Object.entries(fileTypeCounts).map(([name, value]) => ({ name, value }));
+    // Count days active
+    const [daysActiveResult] = await db
+      .select({ count: sql<number>`count(distinct date(${activities.timestamp}))` })
+      .from(activities);
+    const daysActive = daysActiveResult.count;
     
-    // Calculate activity by category
-    const uploads2 = this.activitiesStore.size;
-    const updates = Array.from(this.activitiesStore.values()).filter(a => a.type === "update").length;
-    const commentActivity = Array.from(this.activitiesStore.values()).filter(a => a.type === "comment").length;
+    // Count files by type
+    const fileTypesResult = await db
+      .select({
+        name: files.type,
+        value: sql<number>`count(*)`
+      })
+      .from(files)
+      .groupBy(files.type);
     
-    const activityByCategory = [
-      { name: "Uploads", value: uploads },
-      { name: "Updates", value: updates },
-      { name: "Comments", value: commentActivity }
-    ];
+    // Count activities by type
+    const activityByCategoryResult = await db
+      .select({
+        name: activities.type,
+        value: sql<number>`count(*)`
+      })
+      .from(activities)
+      .groupBy(activities.type);
     
     return {
       uploads,
       comments,
       members,
-      daysActive: daysActive || 1, // Ensure at least 1 day
-      fileTypes,
-      activityByCategory
+      daysActive,
+      fileTypes: fileTypesResult,
+      activityByCategory: activityByCategoryResult
     };
   }
   
@@ -512,142 +496,141 @@ export class MemStorage implements IStorage {
     filesCount: number;
     commentsCount: number;
   }[]> {
-    const users = Array.from(this.usersStore.values());
-    const userContributions: Record<number, { filesCount: number; commentsCount: number }> = {};
+    // Get users
+    const usersList = await db.select().from(users);
     
-    // Initialize with zeros
-    users.forEach(user => {
-      userContributions[user.id] = { filesCount: 0, commentsCount: 0 };
-    });
+    // Get counts of files and comments by each user
+    const result = await Promise.all(
+      usersList.map(async (user) => {
+        // Count files uploaded by user
+        const [filesResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(files)
+          .where(eq(files.userId, user.id));
+        const filesCount = filesResult.count;
+        
+        // Count comments by user
+        const [commentsResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(comments)
+          .where(eq(comments.userId, user.id));
+        const commentsCount = commentsResult.count;
+        
+        return {
+          userId: user.id,
+          user: {
+            name: user.fullName || user.username,
+            avatarUrl: user.avatarUrl
+          },
+          filesCount,
+          commentsCount
+        };
+      })
+    );
     
-    // Count files per user
-    Array.from(this.filesStore.values()).forEach(file => {
-      if (userContributions[file.userId]) {
-        userContributions[file.userId].filesCount++;
-      }
-    });
+    // Calculate total counts
+    const totalFiles = result.reduce((sum, item) => sum + item.filesCount, 0);
+    const totalComments = result.reduce((sum, item) => sum + item.commentsCount, 0);
     
-    // Count comments per user
-    Array.from(this.commentsStore.values()).forEach(comment => {
-      if (userContributions[comment.userId]) {
-        userContributions[comment.userId].commentsCount++;
-      }
-    });
-    
-    // Calculate total contribution score (files count more than comments)
-    const contributionScores = users.map(user => {
-      const { filesCount, commentsCount } = userContributions[user.id];
-      // Weight: files are worth 3 points, comments are worth 1 point
-      const score = filesCount * 3 + commentsCount;
+    // Calculate percentage contribution for each user
+    const resultsWithPercentage = result.map(item => {
+      const totalContribution = item.filesCount + item.commentsCount;
+      const totalAllContributions = totalFiles + totalComments;
+      const percentage = totalAllContributions > 0 
+        ? (totalContribution / totalAllContributions) * 100 
+        : 0;
+      
       return {
-        userId: user.id,
-        user: {
-          name: user.fullName || user.username,
-          avatarUrl: user.avatarUrl
-        },
-        score,
-        filesCount,
-        commentsCount
+        ...item,
+        percentage
       };
     });
     
-    // Calculate percentages
-    const totalScore = contributionScores.reduce((sum, item) => sum + item.score, 0);
-    
-    return contributionScores.map(item => ({
-      ...item,
-      percentage: totalScore > 0 ? Math.round((item.score / totalScore) * 100) : 0
-    })).sort((a, b) => b.percentage - a.percentage);
+    // Sort by percentage in descending order
+    return resultsWithPercentage.sort((a, b) => b.percentage - a.percentage);
   }
-  
+
   async getActivityByDay(): Promise<{ date: string; files: number; comments: number }[]> {
-    const activities = Array.from(this.activitiesStore.values());
-    const activityByDay: Record<string, { files: number; comments: number }> = {};
+    // Get activities grouped by day for the last 30 days
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
     
-    // Get the date range (last 14 days)
-    const today = new Date();
-    const dates: string[] = [];
-    for (let i = 13; i >= 0; i--) {
-      const date = new Date(today);
+    // Create an array of dates for the last 30 days
+    const dates: { date: string; files: number; comments: number }[] = [];
+    for (let i = 0; i < 30; i++) {
+      const date = new Date();
       date.setDate(date.getDate() - i);
-      const dateString = date.toISOString().split('T')[0];
-      dates.push(dateString);
-      activityByDay[dateString] = { files: 0, comments: 0 };
+      dates.push({
+        date: date.toISOString().split('T')[0],
+        files: 0,
+        comments: 0
+      });
     }
     
-    // Count activities by date
-    activities.forEach(activity => {
-      const date = new Date(activity.timestamp).toISOString().split('T')[0];
-      if (activityByDay[date]) {
-        if (activity.type === 'upload' || activity.type === 'update') {
-          activityByDay[date].files++;
-        } else if (activity.type === 'comment') {
-          activityByDay[date].comments++;
-        }
+    // Count file uploads by day
+    const filesByDay = await db
+      .select({
+        date: sql<string>`date(${files.createdAt})`,
+        count: sql<number>`count(*)`
+      })
+      .from(files)
+      .where(sql`${files.createdAt} >= ${startDate.toISOString()} and ${files.createdAt} <= ${endDate.toISOString()}`)
+      .groupBy(sql`date(${files.createdAt})`);
+    
+    // Count comments by day
+    const commentsByDay = await db
+      .select({
+        date: sql<string>`date(${comments.createdAt})`,
+        count: sql<number>`count(*)`
+      })
+      .from(comments)
+      .where(sql`${comments.createdAt} >= ${startDate.toISOString()} and ${comments.createdAt} <= ${endDate.toISOString()}`)
+      .groupBy(sql`date(${comments.createdAt})`);
+    
+    // Merge the data
+    filesByDay.forEach(item => {
+      const dateItem = dates.find(d => d.date === item.date);
+      if (dateItem) {
+        dateItem.files = item.count;
       }
     });
     
-    // Convert to array
-    return dates.map(date => ({
-      date,
-      files: activityByDay[date]?.files || 0,
-      comments: activityByDay[date]?.comments || 0
-    }));
+    commentsByDay.forEach(item => {
+      const dateItem = dates.find(d => d.date === item.date);
+      if (dateItem) {
+        dateItem.comments = item.count;
+      }
+    });
+    
+    // Sort by date
+    return dates.sort((a, b) => a.date.localeCompare(b.date));
   }
-  
-  // File download operations
+
   async downloadFile(fileId: number): Promise<{ content: Buffer; fileName: string; contentType: string }> {
     const file = await this.getFile(fileId);
-    if (!file) throw new Error("File not found");
-    
-    const content = this.fileContents.get(file.path);
-    if (!content) throw new Error("File content not found");
-    
-    // Determine content type based on file extension
-    let contentType = "application/octet-stream"; // Default
-    const extension = path.extname(file.name).toLowerCase();
-    
-    switch (extension) {
-      case '.txt':
-        contentType = 'text/plain';
-        break;
-      case '.html':
-        contentType = 'text/html';
-        break;
-      case '.css':
-        contentType = 'text/css';
-        break;
-      case '.js':
-        contentType = 'application/javascript';
-        break;
-      case '.json':
-        contentType = 'application/json';
-        break;
-      case '.jpg':
-      case '.jpeg':
-        contentType = 'image/jpeg';
-        break;
-      case '.png':
-        contentType = 'image/png';
-        break;
-      case '.gif':
-        contentType = 'image/gif';
-        break;
-      case '.pdf':
-        contentType = 'application/pdf';
-        break;
-      case '.doc':
-      case '.docx':
-        contentType = 'application/msword';
-        break;
-      case '.xls':
-      case '.xlsx':
-        contentType = 'application/vnd.ms-excel';
-        break;
-      case '.zip':
-        contentType = 'application/zip';
-        break;
+    if (!file) {
+      throw new Error("File not found");
     }
+    
+    // Determine content type based on file type
+    let contentType = "application/octet-stream"; // Default
+    if (file.type === "Image") {
+      contentType = "image/jpeg"; // Assuming JPEG for simplicity
+    } else if (file.type === "PDF") {
+      contentType = "application/pdf";
+    } else if (file.type === "Document") {
+      contentType = "application/msword";
+    } else if (file.type === "Spreadsheet") {
+      contentType = "application/vnd.ms-excel";
+    } else if (file.type === "Text" || file.type === "JavaScript" || file.type === "HTML" || file.type === "CSS") {
+      contentType = "text/plain";
+    }
+    
+    // Read the file from the filesystem
+    const fileName = path.basename(file.path);
+    const uploadDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../uploads");
+    const content = await fs.promises.readFile(path.join(uploadDir, fileName));
     
     return {
       content,
@@ -655,19 +638,13 @@ export class MemStorage implements IStorage {
       contentType
     };
   }
-  
+
   async downloadProject(): Promise<Buffer> {
-    // In a real implementation, this would zip all project files
-    // For this in-memory implementation, we'll just create a simple text file
-    // listing all files in the project
-    
-    const filesList = Array.from(this.filesStore.values())
-      .map(file => `${file.name} (${file.size} bytes) - Uploaded by user #${file.userId} on ${file.createdAt}`)
-      .join('\n');
-    
-    const content = `GroupHub Project Files\n\n${filesList}`;
-    return Buffer.from(content);
+    // This is a placeholder implementation
+    // In a real system, you would collect all files and zip them
+    return Buffer.from("Project files would be zipped here");
   }
 }
 
-export const storage = new MemStorage();
+// Export an instance of the DatabaseStorage class
+export const storage = new DatabaseStorage();
