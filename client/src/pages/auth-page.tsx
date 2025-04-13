@@ -50,11 +50,20 @@ export default function AuthPage() {
         })
         .then(res => {
           if (!res.ok) {
-            throw new Error(`${res.status}: ${res.statusText}`);
+            if (res.status === 401) {
+              throw new Error("Invalid username or password. Please try again.");
+            }
+            return res.text().then(text => {
+              throw new Error(`Login failed: ${text || res.statusText}`);
+            });
           }
           return res.json();
         })
         .then(() => {
+          toast({
+            title: "Login successful",
+            description: "You have been logged in successfully.",
+          });
           window.location.href = "/"; // Redirect on success
         })
         .catch(err => {
@@ -79,11 +88,22 @@ export default function AuthPage() {
         })
         .then(res => {
           if (!res.ok) {
-            throw new Error(`${res.status}: ${res.statusText}`);
+            return res.text().then(text => {
+              // If the response contains "Username already exists"
+              if (text.includes("Username already exists")) {
+                throw new Error("Username already exists. Please choose a different username.");
+              } else {
+                throw new Error(`Registration failed: ${text || res.statusText}`);
+              }
+            });
           }
           return res.json();
         })
         .then(() => {
+          toast({
+            title: "Registration successful",
+            description: "Your account has been created successfully.",
+          });
           window.location.href = "/"; // Redirect on success
         })
         .catch(err => {
