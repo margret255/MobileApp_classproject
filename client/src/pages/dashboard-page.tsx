@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Header from "@/components/layout/header";
 import Sidebar from "@/components/layout/sidebar";
 import MobileNav from "@/components/layout/mobile-nav";
@@ -10,13 +10,40 @@ import FileUploadModal from "@/components/file-upload-modal";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { StatsData } from "@/interfaces";
-import { useAuth } from "@/hooks/use-auth";
 import { Upload, UserPlus, UploadCloud, MessageSquare, Users, Calendar } from "lucide-react";
+
+// Temporary function to get user data
+function useUserData() {
+  const [user, setUser] = useState<any>(null);
+  
+  useEffect(() => {
+    fetch("/api/user", {
+      credentials: "include"
+    })
+    .then(res => {
+      if (res.status === 401) {
+        return null;
+      }
+      if (!res.ok) {
+        throw new Error(`${res.status}: ${res.statusText}`);
+      }
+      return res.json();
+    })
+    .then(userData => {
+      setUser(userData);
+    })
+    .catch(err => {
+      console.error("Error fetching user data:", err);
+    });
+  }, []);
+  
+  return { user };
+}
 
 export default function DashboardPage() {
   const [mobileNavVisible, setMobileNavVisible] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const { user } = useAuth();
+  const { user } = useUserData();
   
   const { data: stats, isLoading: statsLoading } = useQuery<StatsData>({
     queryKey: ["/api/stats"],

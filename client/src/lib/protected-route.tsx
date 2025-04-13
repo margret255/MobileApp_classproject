@@ -1,15 +1,48 @@
-import { useAuth } from "@/hooks/use-auth";
+import { useState, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { Redirect, Route } from "wouter";
+
+// Temporary fix to avoid authentication context issues
+function useCurrentUser() {
+  // Check if the user is logged in by making a direct API call
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
+  
+  useEffect(() => {
+    // Check if user is authenticated
+    fetch("/api/user", {
+      credentials: "include"
+    })
+    .then(res => {
+      if (res.status === 401) {
+        return null;
+      }
+      if (!res.ok) {
+        throw new Error(`${res.status}: ${res.statusText}`);
+      }
+      return res.json();
+    })
+    .then(userData => {
+      setUser(userData);
+      setLoading(false);
+    })
+    .catch(err => {
+      console.error("Error checking authentication:", err);
+      setLoading(false);
+    });
+  }, []);
+  
+  return { user, isLoading: loading };
+}
 
 export function ProtectedRoute({
   path,
   component: Component,
 }: {
   path: string;
-  component: () => React.JSX.Element;
+  component: () => JSX.Element;
 }) {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading } = useCurrentUser();
 
   if (isLoading) {
     return (
