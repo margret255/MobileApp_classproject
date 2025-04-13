@@ -33,29 +33,66 @@ export default function AuthPage() {
   const [activeTab, setActiveTab] = useState<string>("login");
   const { toast } = useToast();
   
-  // We're creating a mock auth context implementation that will display the login UI
-  // but won't actually try to log in - for demo purposes
+  // Temporary fix for authentication issues
   const mockAuthContext = {
     user: null,
     isLoading: false,
     error: null,
     loginMutation: {
       mutate: (data: any) => {
-        toast({
-          title: "Demo Mode",
-          description: "This is a demo. Registration would normally create an account.",
-        });
         console.log("Login attempted with:", data);
+        // Make the API call manually
+        fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+          credentials: "include"
+        })
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`${res.status}: ${res.statusText}`);
+          }
+          return res.json();
+        })
+        .then(() => {
+          window.location.href = "/"; // Redirect on success
+        })
+        .catch(err => {
+          toast({
+            title: "Login failed",
+            description: err.message,
+            variant: "destructive",
+          });
+        });
       },
       isPending: false
     },
     registerMutation: {
       mutate: (data: any) => {
-        toast({
-          title: "Demo Mode",
-          description: "This is a demo. Registration would normally create an account.",
-        });
         console.log("Registration attempted with:", data);
+        // Make the API call manually
+        fetch("/api/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+          credentials: "include"
+        })
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`${res.status}: ${res.statusText}`);
+          }
+          return res.json();
+        })
+        .then(() => {
+          window.location.href = "/"; // Redirect on success
+        })
+        .catch(err => {
+          toast({
+            title: "Registration failed",
+            description: err.message,
+            variant: "destructive",
+          });
+        });
       },
       isPending: false
     },
@@ -65,15 +102,8 @@ export default function AuthPage() {
     }
   };
   
-  // Use the real auth context if available, otherwise use the mock
-  let authContext;
-  try {
-    authContext = useAuth();
-  } catch (error) {
-    authContext = mockAuthContext;
-  }
-  
-  const { loginMutation, registerMutation, user } = authContext;
+  // Use the mock auth context to avoid dependency issues
+  const { loginMutation, registerMutation, user } = mockAuthContext;
 
   const loginForm = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
