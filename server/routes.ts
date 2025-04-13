@@ -246,7 +246,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const stats = await storage.getStats();
       res.json(stats);
     } catch (error) {
-      res.status(500).json({ error: (error as Error).message });
+      console.error('Stats error:', error);
+      console.error('Stack trace:', (error as Error).stack);
+      res.status(500).json({ error: (error as Error).message, stack: (error as Error).stack });
     }
   });
 

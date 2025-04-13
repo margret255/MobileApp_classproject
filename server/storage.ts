@@ -447,7 +447,7 @@ export class DatabaseStorage implements IStorage {
     const [commentsResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(comments);
-    const comments = commentsResult.count;
+    const commentsCount = commentsResult.count;
     
     // Count members (project members)
     const [membersResult] = await db
@@ -481,7 +481,7 @@ export class DatabaseStorage implements IStorage {
     
     return {
       uploads,
-      comments,
+      comments: commentsCount,
       members,
       daysActive,
       fileTypes: fileTypesResult,
